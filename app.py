@@ -14,7 +14,7 @@ from db import (
     top_holdings,
     upsert_holding,
 )
-from parsing import parse_value_jpy
+from parsing import parse_quantity, parse_value_jpy
 
 REQUIRED_COLUMNS = [
     "major_category",
@@ -47,11 +47,7 @@ def _load_holdings(db_path: Path) -> pd.DataFrame:
 
 
 def _parse_quantity(value) -> float | None:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    if value == "":
-        return None
-    return float(value)
+    return parse_quantity(value)
 
 
 if page == "Holdings":
