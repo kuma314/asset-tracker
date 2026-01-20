@@ -14,6 +14,7 @@ from db import (
     top_holdings,
     upsert_holding,
 )
+from parsing import parse_value_jpy
 
 REQUIRED_COLUMNS = [
     "major_category",
@@ -51,15 +52,6 @@ def _parse_quantity(value) -> float | None:
     if value == "":
         return None
     return float(value)
-
-
-def _parse_value_jpy(value) -> int:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        raise ValueError("value_jpy is required")
-    value_int = int(value)
-    if value_int < 0:
-        raise ValueError("value_jpy must be 0 or greater")
-    return value_int
 
 
 if page == "Holdings":
@@ -138,7 +130,9 @@ if page == "Holdings":
                 continue
 
             try:
-                value_jpy = _parse_value_jpy(row.get("value_jpy"))
+                value_jpy = parse_value_jpy(row.get("value_jpy"))
+                if value_jpy is None:
+                    raise ValueError("value_jpy is required")
                 upsert_holding(
                     holding_id=int(row["id"]) if pd.notna(row.get("id")) else None,
                     major_category=str(row.get("major_category") or "").strip(),
@@ -189,7 +183,7 @@ elif page == "Import/Export":
                                 "name_or_ticker": str(row.get("name_or_ticker") or "").strip(),
                                 "account_type": str(row.get("account_type") or "").strip(),
                                 "quantity": _parse_quantity(row.get("quantity")),
-                                "value_jpy": _parse_value_jpy(row.get("value_jpy")),
+                                "value_jpy": parse_value_jpy(row.get("value_jpy")),
                             }
                         )
                     try:
