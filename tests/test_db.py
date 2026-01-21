@@ -65,3 +65,40 @@ def test_summaries_and_top_holdings(tmp_path: Path) -> None:
 
     top = db.top_holdings(2, db_path)
     assert [row["name_or_ticker"] for row in top] == ["7203", "AAPL"]
+
+
+def test_upsert_holdings_by_key_updates_matching_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    db.init_db(db_path)
+    db.insert_holdings(
+        [
+            {
+                "major_category": "Stocks",
+                "sub_category": "US",
+                "name_or_ticker": "AAPL",
+                "account_type": "Taxable",
+                "quantity": 5,
+                "value_jpy": 100000,
+            }
+        ],
+        db_path=db_path,
+    )
+
+    db.upsert_holdings_by_key(
+        [
+            {
+                "major_category": "Stocks",
+                "sub_category": "US",
+                "name_or_ticker": "AAPL",
+                "account_type": "Taxable",
+                "quantity": 10,
+                "value_jpy": 150000,
+            }
+        ],
+        db_path=db_path,
+    )
+
+    rows = db.fetch_holdings(db_path)
+    assert len(rows) == 1
+    assert rows[0]["quantity"] == 10
+    assert rows[0]["value_jpy"] == 150000
