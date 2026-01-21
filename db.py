@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from canonicalization import canonical_name
+
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "asset_tracker.db"
 
 
@@ -25,6 +27,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 major_category TEXT NOT NULL,
                 sub_category TEXT,
                 name_or_ticker TEXT NOT NULL,
+                canonical_key TEXT NOT NULL,
                 account_type TEXT NOT NULL,
                 quantity REAL,
                 value_jpy INTEGER CHECK (value_jpy IS NULL OR value_jpy >= 0),
@@ -32,6 +35,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             )
             """
         )
+        _ensure_canonical_key_column(connection)
         connection.commit()
 
 
@@ -39,8 +43,8 @@ def fetch_holdings(db_path: Path = DEFAULT_DB_PATH) -> List[sqlite3.Row]:
     with get_connection(db_path) as connection:
         cursor = connection.execute(
             """
-            SELECT id, major_category, sub_category, name_or_ticker, account_type,
-                   quantity, value_jpy, updated_at
+            SELECT id, major_category, sub_category, name_or_ticker, canonical_key,
+                   account_type, quantity, value_jpy, updated_at
             FROM holdings
             ORDER BY updated_at DESC, id DESC
             """
@@ -63,19 +67,21 @@ def upsert_holding(
         raise ValueError("value_jpy must be 0 or greater")
 
     updated_at = _utc_now_iso()
+    canonical_key = canonical_name(name_or_ticker)
     with get_connection(db_path) as connection:
         if holding_id is None:
             connection.execute(
                 """
                 INSERT INTO holdings (
-                    major_category, sub_category, name_or_ticker, account_type,
-                    quantity, value_jpy, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    major_category, sub_category, name_or_ticker, canonical_key,
+                    account_type, quantity, value_jpy, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     major_category,
                     sub_category,
                     name_or_ticker,
+                    canonical_key,
                     account_type,
                     quantity,
                     value_jpy,
@@ -89,6 +95,7 @@ def upsert_holding(
                 SET major_category = ?,
                     sub_category = ?,
                     name_or_ticker = ?,
+                    canonical_key = ?,
                     account_type = ?,
                     quantity = ?,
                     value_jpy = ?,
@@ -99,6 +106,7 @@ def upsert_holding(
                     major_category,
                     sub_category,
                     name_or_ticker,
+                    canonical_key,
                     account_type,
                     quantity,
                     value_jpy,
@@ -137,9 +145,12 @@ def insert_holdings(
 def upsert_holdings_by_key(
     rows: Iterable[dict],
     db_path: Path = DEFAULT_DB_PATH,
-) -> None:
+) -> tuple[int, int, int]:
     with get_connection(db_path) as connection:
         updated_at = _utc_now_iso()
+        inserted = 0
+        updated = 0
+        skipped = 0
         for row in rows:
             value_jpy = row.get("value_jpy")
             if value_jpy is not None and int(value_jpy) < 0:
@@ -148,53 +159,68 @@ def upsert_holdings_by_key(
             major_category = row.get("major_category")
             name_or_ticker = row.get("name_or_ticker")
             account_type = row.get("account_type")
+            canonical_key = row.get("canonical_key") or canonical_name(name_or_ticker)
+
+            if not canonical_key or account_type is None:
+                skipped += 1
+                continue
 
             cursor = connection.execute(
                 """
                 SELECT id
                 FROM holdings
-                WHERE major_category = ? AND name_or_ticker = ? AND account_type = ?
+                WHERE canonical_key = ? AND account_type = ?
                 """,
-                (major_category, name_or_ticker, account_type),
+                (canonical_key, account_type),
             )
             existing = cursor.fetchone()
             if existing:
                 connection.execute(
                     """
                     UPDATE holdings
-                    SET sub_category = ?,
+                    SET major_category = ?,
+                        sub_category = ?,
+                        name_or_ticker = ?,
+                        canonical_key = ?,
                         quantity = ?,
                         value_jpy = ?,
                         updated_at = ?
                     WHERE id = ?
                     """,
                     (
+                        major_category,
                         row.get("sub_category"),
+                        name_or_ticker,
+                        canonical_key,
                         row.get("quantity"),
                         int(value_jpy) if value_jpy is not None else None,
                         updated_at,
                         existing["id"],
                     ),
                 )
+                updated += 1
             else:
                 connection.execute(
                     """
                     INSERT INTO holdings (
-                        major_category, sub_category, name_or_ticker, account_type,
-                        quantity, value_jpy, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        major_category, sub_category, name_or_ticker, canonical_key,
+                        account_type, quantity, value_jpy, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         major_category,
                         row.get("sub_category"),
                         name_or_ticker,
+                        canonical_key,
                         account_type,
                         row.get("quantity"),
                         int(value_jpy) if value_jpy is not None else None,
                         updated_at,
                     ),
                 )
+                inserted += 1
         connection.commit()
+        return inserted, updated, skipped
 
 
 def _insert_rows(connection: sqlite3.Connection, rows: Iterable[dict]) -> None:
@@ -203,11 +229,13 @@ def _insert_rows(connection: sqlite3.Connection, rows: Iterable[dict]) -> None:
         value_jpy = row.get("value_jpy")
         if value_jpy is not None and int(value_jpy) < 0:
             raise ValueError("value_jpy must be 0 or greater")
+        name_or_ticker = row.get("name_or_ticker")
         payload.append(
             (
                 row.get("major_category"),
                 row.get("sub_category"),
-                row.get("name_or_ticker"),
+                name_or_ticker,
+                row.get("canonical_key") or canonical_name(name_or_ticker),
                 row.get("account_type"),
                 row.get("quantity"),
                 int(value_jpy) if value_jpy is not None else None,
@@ -218,12 +246,34 @@ def _insert_rows(connection: sqlite3.Connection, rows: Iterable[dict]) -> None:
     connection.executemany(
         """
         INSERT INTO holdings (
-            major_category, sub_category, name_or_ticker, account_type,
-            quantity, value_jpy, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            major_category, sub_category, name_or_ticker, canonical_key,
+            account_type, quantity, value_jpy, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         payload,
     )
+
+
+def _ensure_canonical_key_column(connection: sqlite3.Connection) -> None:
+    columns = [
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(holdings)").fetchall()
+    ]
+    if "canonical_key" not in columns:
+        connection.execute(
+            "ALTER TABLE holdings ADD COLUMN canonical_key TEXT NOT NULL DEFAULT ''"
+        )
+
+    cursor = connection.execute(
+        "SELECT id, name_or_ticker, canonical_key FROM holdings"
+    )
+    rows = cursor.fetchall()
+    for row in rows:
+        if not row["canonical_key"]:
+            connection.execute(
+                "UPDATE holdings SET canonical_key = ? WHERE id = ?",
+                (canonical_name(row["name_or_ticker"]), row["id"]),
+            )
 
 
 def summarize_by(column: str, db_path: Path = DEFAULT_DB_PATH) -> List[sqlite3.Row]:

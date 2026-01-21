@@ -1,5 +1,4 @@
 from io import StringIO
-import os
 from pathlib import Path
 
 import pandas as pd
@@ -18,17 +17,15 @@ from db import (
     upsert_holding,
 )
 from parsing import (
-    build_name_or_ticker,
     detect_report_csv,
     normalize_account_type,
     normalize_import_dataframe,
-    normalize_name,
-    normalize_ticker,
     parse_quantity,
     parse_report_csv,
     parse_value_jpy,
 )
-from screenshot_import import extract_holdings_from_screenshot
+from canonicalization import canonical_name
+from classification_rules import apply_classification_rules
 
 REQUIRED_COLUMNS = [
     "major_category",
@@ -47,7 +44,7 @@ init_db(DEFAULT_DB_PATH)
 
 st.sidebar.title("Asset Tracker")
 page = st.sidebar.radio(
-    "ページ", ["Holdings", "Import/Export", "Screenshot Import", "Dashboard"], index=0
+    "ページ", ["Holdings", "Import/Export", "Dashboard"], index=0
 )
 
 
@@ -72,14 +69,27 @@ def _build_rows_from_df(df: pd.DataFrame) -> tuple[list[dict], list[str]]:
         if value_jpy is None:
             errors.append(f"{idx + 1}行目: 評価額(円)が未入力です")
             continue
+        name_or_ticker = str(row.get("name_or_ticker") or "").strip()
+        if not name_or_ticker:
+            errors.append(f"{idx + 1}行目: 銘柄名が未入力です")
+            continue
+        canonical_key = canonical_name(name_or_ticker)
+        major_category = str(row.get("major_category") or "").strip()
+        sub_category = str(row.get("sub_category") or "").strip() or None
+        major_category, sub_category, overridden = apply_classification_rules(
+            canonical_key, major_category, sub_category
+        )
         rows.append(
             {
-                "major_category": str(row.get("major_category") or "").strip(),
-                "sub_category": str(row.get("sub_category") or "").strip() or None,
-                "name_or_ticker": str(row.get("name_or_ticker") or "").strip(),
-                "account_type": str(row.get("account_type") or "").strip(),
+                "major_category": major_category,
+                "sub_category": sub_category,
+                "name_or_ticker": name_or_ticker,
+                "canonical_key": canonical_key,
+                "account_type": normalize_account_type(row.get("account_type"))
+                or str(row.get("account_type") or "").strip(),
                 "quantity": _parse_quantity(row.get("quantity")),
                 "value_jpy": value_jpy,
+                "category_overridden": overridden,
             }
         )
     return rows, errors
@@ -89,6 +99,7 @@ if page == "Holdings":
     st.title("Holdings")
 
     holdings_df = _load_holdings(DEFAULT_DB_PATH)
+    holdings_df = holdings_df.drop(columns=["canonical_key"], errors="ignore")
     all_major_categories = sorted(
         value for value in holdings_df["major_category"].dropna().unique()
     )
@@ -229,7 +240,7 @@ elif page == "Import/Export":
                         horizontal=True,
                     )
                     st.caption(
-                        "マージは major_category + name_or_ticker + account_type をキーに更新します。"
+                        "マージは canonical_key + account_type をキーに更新します。"
                     )
 
                     if st.button("確定してインポート"):
@@ -239,12 +250,37 @@ elif page == "Import/Export":
                             try:
                                 if action == "置換":
                                     replace_holdings(rows)
+                                    st.success("インポートしました。")
                                 else:
-                                    upsert_holdings_by_key(rows)
-                                st.success("インポートしました。")
+                                    inserted, updated, skipped = (
+                                        upsert_holdings_by_key(rows)
+                                    )
+                                    st.success(
+                                        "インポートしました。"
+                                        f" inserted {inserted} / updated {updated}"
+                                        f" / skipped {skipped}"
+                                    )
                                 st.cache_data.clear()
                             except ValueError as exc:
                                 st.error(f"インポートに失敗しました: {exc}")
+                if not errors and rows:
+                    st.subheader("正規化プレビュー")
+                    preview_df = pd.DataFrame(rows)
+                    st.dataframe(
+                        preview_df[
+                            [
+                                "name_or_ticker",
+                                "canonical_key",
+                                "major_category",
+                                "sub_category",
+                                "category_overridden",
+                                "account_type",
+                                "quantity",
+                                "value_jpy",
+                            ]
+                        ],
+                        use_container_width=True,
+                    )
         elif decoded_text is not None:
             try:
                 uploaded_df = pd.read_csv(StringIO(decoded_text))
@@ -282,7 +318,7 @@ elif page == "Import/Export":
                             horizontal=True,
                         )
                         st.caption(
-                            "マージは major_category + name_or_ticker + account_type をキーに更新します。"
+                            "マージは canonical_key + account_type をキーに更新します。"
                         )
 
                         if st.button("確定してインポート"):
@@ -292,9 +328,17 @@ elif page == "Import/Export":
                                 try:
                                     if action == "置換":
                                         replace_holdings(rows)
+                                        st.success("インポートしました。")
                                     else:
-                                        upsert_holdings_by_key(rows)
-                                    st.success("インポートしました。")
+                                        inserted, updated, skipped = (
+                                            upsert_holdings_by_key(rows)
+                                        )
+                                        st.success(
+                                            "インポートしました。"
+                                            f" inserted {inserted} /"
+                                            f" updated {updated} /"
+                                            f" skipped {skipped}"
+                                        )
                                     st.cache_data.clear()
                                 except ValueError as exc:
                                     st.error(f"インポートに失敗しました: {exc}")
@@ -310,98 +354,6 @@ elif page == "Import/Export":
         file_name="holdings.csv",
         mime="text/csv",
     )
-
-elif page == "Screenshot Import":
-    st.title("Screenshot Import")
-    st.caption("米国株のスクリーンショット画像を解析して保有情報を取り込みます。")
-
-    uploaded = st.file_uploader(
-        "スクリーンショット画像", type=["png", "jpg", "jpeg", "webp"]
-    )
-
-    if uploaded is None:
-        st.session_state.pop("screenshot_rows", None)
-    else:
-        st.image(uploaded, caption="アップロード済み画像", use_column_width=True)
-
-    if uploaded is not None and st.button("解析する"):
-        with st.spinner("画像を解析しています..."):
-            try:
-                rows = extract_holdings_from_screenshot(
-                    uploaded.getvalue(), os.getenv("OPENAI_API_KEY", "")
-                )
-            except Exception as exc:
-                st.error(f"解析に失敗しました: {exc}")
-                rows = []
-
-        if not rows:
-            st.warning("米国株の行が見つかりませんでした。")
-        else:
-            st.session_state["screenshot_rows"] = rows
-
-    if "screenshot_rows" in st.session_state:
-        st.subheader("プレビュー (編集可能)")
-        preview_df = pd.DataFrame(st.session_state["screenshot_rows"])
-        edited_df = st.data_editor(
-            preview_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "ticker": st.column_config.TextColumn("ティッカー"),
-                "name": st.column_config.TextColumn("銘柄名"),
-                "quantity": st.column_config.NumberColumn("保有数量"),
-                "avg_cost": st.column_config.NumberColumn("取得単価"),
-                "last_price": st.column_config.NumberColumn("現在値"),
-                "value_jpy": st.column_config.NumberColumn("円換算評価額"),
-                "account_type": st.column_config.TextColumn("口座区分"),
-                "name_or_ticker": st.column_config.TextColumn(
-                    "内部用", disabled=True
-                ),
-            },
-        )
-
-        replace_mode = st.checkbox("既存データを置換（全削除→投入）", value=False)
-        if st.button("DBへ反映（upsert）"):
-            rows = []
-            errors = []
-            for idx, row in edited_df.iterrows():
-                ticker = normalize_ticker(row.get("ticker"))
-                if not ticker:
-                    errors.append(f"{idx + 1}行目: ティッカーが必要です。")
-                    continue
-                name = normalize_name(row.get("name"))
-                name_or_ticker = build_name_or_ticker(ticker, name)
-                account_type = normalize_account_type(row.get("account_type")) or "不明"
-                quantity = parse_quantity(row.get("quantity"))
-                try:
-                    value_jpy = parse_value_jpy(row.get("value_jpy"))
-                except ValueError as exc:
-                    errors.append(f"{idx + 1}行目: {exc}")
-                    continue
-
-                rows.append(
-                    {
-                        "major_category": "米国株",
-                        "sub_category": "個別株",
-                        "name_or_ticker": name_or_ticker,
-                        "account_type": account_type,
-                        "quantity": quantity,
-                        "value_jpy": value_jpy,
-                    }
-                )
-
-            if errors:
-                st.error("反映に失敗しました: " + "; ".join(errors[:10]))
-            else:
-                try:
-                    if replace_mode:
-                        replace_holdings(rows)
-                    else:
-                        upsert_holdings_by_key(rows)
-                    st.success("DBへ反映しました。")
-                    st.cache_data.clear()
-                except ValueError as exc:
-                    st.error(f"反映に失敗しました: {exc}")
 
 else:
     st.title("Dashboard")

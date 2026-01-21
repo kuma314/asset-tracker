@@ -4,6 +4,7 @@ from typing import Iterable
 
 import pandas as pd
 
+from canonicalization import canonical_name
 
 REPORT_ENCODING_CANDIDATES: tuple[str, ...] = ("cp932", "shift_jis", "utf-8")
 
@@ -107,10 +108,9 @@ def normalize_account_type(account_type: object | None) -> str | None:
     return account_text
 
 
-def build_upsert_key(row: dict) -> tuple[str | None, str | None, str | None]:
+def build_upsert_key(row: dict) -> tuple[str | None, str | None]:
     return (
-        normalize_text(row.get("major_category")),
-        normalize_text(row.get("name_or_ticker")),
+        canonical_name(row.get("name_or_ticker")),
         normalize_text(row.get("account_type")),
     )
 
