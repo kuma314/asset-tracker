@@ -73,9 +73,9 @@ def test_upsert_holdings_by_key_updates_matching_rows(tmp_path: Path) -> None:
     db.insert_holdings(
         [
             {
-                "major_category": "Stocks",
-                "sub_category": "US",
-                "name_or_ticker": "AAPL",
+                "major_category": "投資信託",
+                "sub_category": "米国株",
+                "name_or_ticker": "ＳＢＩ・Ｖ・Ｓ＆Ｐ５００インデックス・ファンド",
                 "account_type": "Taxable",
                 "quantity": 5,
                 "value_jpy": 100000,
@@ -84,12 +84,12 @@ def test_upsert_holdings_by_key_updates_matching_rows(tmp_path: Path) -> None:
         db_path=db_path,
     )
 
-    db.upsert_holdings_by_key(
+    inserted, updated, skipped = db.upsert_holdings_by_key(
         [
             {
-                "major_category": "Stocks",
-                "sub_category": "US",
-                "name_or_ticker": "AAPL",
+                "major_category": "投資信託",
+                "sub_category": "米国株",
+                "name_or_ticker": "SBI・V・S&P500 インデックス・ファンド",
                 "account_type": "Taxable",
                 "quantity": 10,
                 "value_jpy": 150000,
@@ -102,3 +102,4 @@ def test_upsert_holdings_by_key_updates_matching_rows(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["quantity"] == 10
     assert rows[0]["value_jpy"] == 150000
+    assert (inserted, updated, skipped) == (0, 1, 0)

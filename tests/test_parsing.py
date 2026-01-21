@@ -3,6 +3,7 @@ from io import StringIO
 import pandas as pd
 import pytest
 
+from canonicalization import canonical_name
 from parsing import (
     build_name_or_ticker,
     build_upsert_key,
@@ -127,4 +128,7 @@ def test_build_upsert_key_consistency() -> None:
         "name_or_ticker": " TSLA テスラ ",
         "account_type": " NISA(成長) ",
     }
-    assert build_upsert_key(row) == ("米国株", "TSLA テスラ", "NISA(成長)")
+    assert build_upsert_key(row) == (
+        canonical_name("TSLA テスラ"),
+        "NISA(成長)",
+    )
