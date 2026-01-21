@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from canonicalization import canonical_name
+from canonicalization import canonicalize_name
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "asset_tracker.db"
 
@@ -36,6 +36,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             """
         )
         _ensure_canonical_key_column(connection)
+        _ensure_canonical_key_index(connection)
         connection.commit()
 
 
@@ -67,7 +68,7 @@ def upsert_holding(
         raise ValueError("value_jpy must be 0 or greater")
 
     updated_at = _utc_now_iso()
-    canonical_key = canonical_name(name_or_ticker)
+    canonical_key = canonicalize_name(name_or_ticker)
     with get_connection(db_path) as connection:
         if holding_id is None:
             connection.execute(
@@ -159,7 +160,7 @@ def upsert_holdings_by_key(
             major_category = row.get("major_category")
             name_or_ticker = row.get("name_or_ticker")
             account_type = row.get("account_type")
-            canonical_key = row.get("canonical_key") or canonical_name(name_or_ticker)
+            canonical_key = row.get("canonical_key") or canonicalize_name(name_or_ticker)
 
             if not canonical_key or account_type is None:
                 skipped += 1
@@ -174,50 +175,34 @@ def upsert_holdings_by_key(
                 (canonical_key, account_type),
             )
             existing = cursor.fetchone()
+            connection.execute(
+                """
+                INSERT INTO holdings (
+                    major_category, sub_category, name_or_ticker, canonical_key,
+                    account_type, quantity, value_jpy, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(canonical_key, account_type) DO UPDATE SET
+                    major_category = excluded.major_category,
+                    sub_category = excluded.sub_category,
+                    name_or_ticker = excluded.name_or_ticker,
+                    quantity = excluded.quantity,
+                    value_jpy = excluded.value_jpy,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    major_category,
+                    row.get("sub_category"),
+                    name_or_ticker,
+                    canonical_key,
+                    account_type,
+                    row.get("quantity"),
+                    int(value_jpy) if value_jpy is not None else None,
+                    updated_at,
+                ),
+            )
             if existing:
-                connection.execute(
-                    """
-                    UPDATE holdings
-                    SET major_category = ?,
-                        sub_category = ?,
-                        name_or_ticker = ?,
-                        canonical_key = ?,
-                        quantity = ?,
-                        value_jpy = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        major_category,
-                        row.get("sub_category"),
-                        name_or_ticker,
-                        canonical_key,
-                        row.get("quantity"),
-                        int(value_jpy) if value_jpy is not None else None,
-                        updated_at,
-                        existing["id"],
-                    ),
-                )
                 updated += 1
             else:
-                connection.execute(
-                    """
-                    INSERT INTO holdings (
-                        major_category, sub_category, name_or_ticker, canonical_key,
-                        account_type, quantity, value_jpy, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        major_category,
-                        row.get("sub_category"),
-                        name_or_ticker,
-                        canonical_key,
-                        account_type,
-                        row.get("quantity"),
-                        int(value_jpy) if value_jpy is not None else None,
-                        updated_at,
-                    ),
-                )
                 inserted += 1
         connection.commit()
         return inserted, updated, skipped
@@ -235,7 +220,7 @@ def _insert_rows(connection: sqlite3.Connection, rows: Iterable[dict]) -> None:
                 row.get("major_category"),
                 row.get("sub_category"),
                 name_or_ticker,
-                row.get("canonical_key") or canonical_name(name_or_ticker),
+                row.get("canonical_key") or canonicalize_name(name_or_ticker),
                 row.get("account_type"),
                 row.get("quantity"),
                 int(value_jpy) if value_jpy is not None else None,
@@ -272,8 +257,17 @@ def _ensure_canonical_key_column(connection: sqlite3.Connection) -> None:
         if not row["canonical_key"]:
             connection.execute(
                 "UPDATE holdings SET canonical_key = ? WHERE id = ?",
-                (canonical_name(row["name_or_ticker"]), row["id"]),
+                (canonicalize_name(row["name_or_ticker"]), row["id"]),
             )
+
+
+def _ensure_canonical_key_index(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS holdings_canonical_account_key
+        ON holdings (canonical_key, account_type)
+        """
+    )
 
 
 def summarize_by(column: str, db_path: Path = DEFAULT_DB_PATH) -> List[sqlite3.Row]:

@@ -24,7 +24,7 @@ from parsing import (
     parse_report_csv,
     parse_value_jpy,
 )
-from canonicalization import canonical_name
+from canonicalization import canonicalize_name
 from classification_rules import apply_classification_rules
 
 REQUIRED_COLUMNS = [
@@ -73,17 +73,24 @@ def _build_rows_from_df(df: pd.DataFrame) -> tuple[list[dict], list[str]]:
         if not name_or_ticker:
             errors.append(f"{idx + 1}行目: 銘柄名が未入力です")
             continue
-        canonical_key = canonical_name(name_or_ticker)
+        canonical_key = canonicalize_name(name_or_ticker)
         major_category = str(row.get("major_category") or "").strip()
         sub_category = str(row.get("sub_category") or "").strip() or None
-        major_category, sub_category, overridden = apply_classification_rules(
-            canonical_key, major_category, sub_category
+        (
+            major_category,
+            sub_category,
+            display_name,
+            overridden,
+        ) = apply_classification_rules(
+            canonical_key, major_category, sub_category, name_or_ticker
         )
+        normalized_name = (display_name or name_or_ticker).strip()
         rows.append(
             {
                 "major_category": major_category,
                 "sub_category": sub_category,
-                "name_or_ticker": name_or_ticker,
+                "name_or_ticker": normalized_name,
+                "original_name_or_ticker": name_or_ticker,
                 "canonical_key": canonical_key,
                 "account_type": normalize_account_type(row.get("account_type"))
                 or str(row.get("account_type") or "").strip(),
@@ -199,6 +206,7 @@ elif page == "Import/Export":
 
     st.subheader("CSVアップロード")
     uploaded = st.file_uploader("CSVファイル", type=["csv"])
+    st.session_state.setdefault("import_summary", None)
 
     if uploaded is not None:
         uploaded_bytes = uploaded.getvalue()
@@ -250,11 +258,19 @@ elif page == "Import/Export":
                             try:
                                 if action == "置換":
                                     replace_holdings(rows)
+                                    st.session_state["import_summary"] = {
+                                        "inserted": len(rows),
+                                        "updated": 0,
+                                    }
                                     st.success("インポートしました。")
                                 else:
                                     inserted, updated, skipped = (
                                         upsert_holdings_by_key(rows)
                                     )
+                                    st.session_state["import_summary"] = {
+                                        "inserted": inserted,
+                                        "updated": updated,
+                                    }
                                     st.success(
                                         "インポートしました。"
                                         f" inserted {inserted} / updated {updated}"
@@ -266,9 +282,17 @@ elif page == "Import/Export":
                 if not errors and rows:
                     st.subheader("正規化プレビュー")
                     preview_df = pd.DataFrame(rows)
+                    summary = st.session_state.get("import_summary")
+                    if summary:
+                        st.info(
+                            "前回のマージ結果: "
+                            f"inserted {summary['inserted']} / "
+                            f"updated {summary['updated']}"
+                        )
                     st.dataframe(
                         preview_df[
                             [
+                                "original_name_or_ticker",
                                 "name_or_ticker",
                                 "canonical_key",
                                 "major_category",
@@ -309,7 +333,22 @@ elif page == "Import/Export":
                         st.metric("取り込み件数", f"{len(rows):,}")
                         st.metric("評価額合計 (円)", f"{int(total_value):,}")
                         st.subheader("プレビュー (先頭10行)")
-                        st.dataframe(preview_df.head(10), use_container_width=True)
+                        st.dataframe(
+                            preview_df[
+                                [
+                                    "original_name_or_ticker",
+                                    "name_or_ticker",
+                                    "canonical_key",
+                                    "major_category",
+                                    "sub_category",
+                                    "category_overridden",
+                                    "account_type",
+                                    "quantity",
+                                    "value_jpy",
+                                ]
+                            ].head(10),
+                            use_container_width=True,
+                        )
 
                         action = st.radio(
                             "既存データの扱い",
@@ -328,11 +367,19 @@ elif page == "Import/Export":
                                 try:
                                     if action == "置換":
                                         replace_holdings(rows)
+                                        st.session_state["import_summary"] = {
+                                            "inserted": len(rows),
+                                            "updated": 0,
+                                        }
                                         st.success("インポートしました。")
                                     else:
                                         inserted, updated, skipped = (
                                             upsert_holdings_by_key(rows)
                                         )
+                                        st.session_state["import_summary"] = {
+                                            "inserted": inserted,
+                                            "updated": updated,
+                                        }
                                         st.success(
                                             "インポートしました。"
                                             f" inserted {inserted} /"
