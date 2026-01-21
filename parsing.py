@@ -45,9 +45,17 @@ def parse_quantity(value) -> float | None:
     return float(normalized)
 
 
+def _normalize_header_name(header: object) -> str:
+    text = str(header).strip()
+    text = text.replace("（", "(").replace("）", ")")
+    for whitespace in (" ", "　", "\t", "\n", "\r"):
+        text = text.replace(whitespace, "")
+    return text
+
+
 def normalize_import_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df.copy()
-    normalized.columns = [str(col).strip() for col in normalized.columns]
+    normalized.columns = [_normalize_header_name(col) for col in normalized.columns]
 
     rename_map = {
         "大分類": "major_category",
@@ -70,7 +78,9 @@ def normalize_import_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             normalized = normalized.rename(columns={"ティッカー": "name_or_ticker"})
 
     if "quantity" not in normalized.columns:
-        if "保有数" in normalized.columns and "口数" in normalized.columns:
+        if "保有数量" in normalized.columns:
+            normalized = normalized.rename(columns={"保有数量": "quantity"})
+        elif "保有数" in normalized.columns and "口数" in normalized.columns:
             normalized["quantity"] = _coalesce_series(
                 normalized["保有数"], normalized["口数"]
             )

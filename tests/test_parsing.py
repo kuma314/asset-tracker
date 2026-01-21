@@ -1,3 +1,5 @@
+from io import StringIO
+
 import pandas as pd
 import pytest
 
@@ -52,3 +54,21 @@ def test_normalize_import_dataframe_japanese_headers() -> None:
     assert normalized["account_type"].tolist() == ["特定", "NISA"]
     assert normalized["quantity"].tolist() == ["100", "10"]
     assert normalized["value_jpy"].tolist() == ["1,000", "2,000"]
+
+
+def test_normalize_import_dataframe_japanese_headers_from_csv() -> None:
+    csv_data = StringIO(
+        " 大分類 ,中分類 ,銘柄名 , ティッカー ,口座区分 ,保有数量 ,評価額（円）\n"
+        '株式,国内,トヨタ,7203,特定,"1,234.5","1,234"\n'
+        '投信,海外,,AAPL,NISA,-,"2,000"\n'
+    )
+    source = pd.read_csv(csv_data)
+
+    normalized = normalize_import_dataframe(source)
+
+    assert normalized["major_category"].tolist() == ["株式", "投信"]
+    assert normalized["sub_category"].tolist() == ["国内", "海外"]
+    assert normalized["name_or_ticker"].tolist() == ["トヨタ", "AAPL"]
+    assert normalized["account_type"].tolist() == ["特定", "NISA"]
+    assert normalized["quantity"].tolist() == ["1,234.5", "-"]
+    assert normalized["value_jpy"].tolist() == ["1,234", "2,000"]
