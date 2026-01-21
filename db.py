@@ -134,6 +134,69 @@ def insert_holdings(
         connection.commit()
 
 
+def upsert_holdings_by_key(
+    rows: Iterable[dict],
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
+    with get_connection(db_path) as connection:
+        updated_at = _utc_now_iso()
+        for row in rows:
+            value_jpy = row.get("value_jpy")
+            if value_jpy is None or int(value_jpy) < 0:
+                raise ValueError("value_jpy must be 0 or greater")
+
+            major_category = row.get("major_category")
+            name_or_ticker = row.get("name_or_ticker")
+            account_type = row.get("account_type")
+
+            cursor = connection.execute(
+                """
+                SELECT id
+                FROM holdings
+                WHERE major_category = ? AND name_or_ticker = ? AND account_type = ?
+                """,
+                (major_category, name_or_ticker, account_type),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                connection.execute(
+                    """
+                    UPDATE holdings
+                    SET sub_category = ?,
+                        quantity = ?,
+                        value_jpy = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        row.get("sub_category"),
+                        row.get("quantity"),
+                        int(value_jpy),
+                        updated_at,
+                        existing["id"],
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO holdings (
+                        major_category, sub_category, name_or_ticker, account_type,
+                        quantity, value_jpy, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        major_category,
+                        row.get("sub_category"),
+                        name_or_ticker,
+                        account_type,
+                        row.get("quantity"),
+                        int(value_jpy),
+                        updated_at,
+                    ),
+                )
+        connection.commit()
+
+
 def _insert_rows(connection: sqlite3.Connection, rows: Iterable[dict]) -> None:
     payload = []
     for row in rows:

@@ -12,9 +12,10 @@ from db import (
     replace_holdings,
     summarize_by,
     top_holdings,
+    upsert_holdings_by_key,
     upsert_holding,
 )
-from parsing import parse_quantity, parse_value_jpy
+from parsing import normalize_import_dataframe, parse_quantity, parse_value_jpy
 
 REQUIRED_COLUMNS = [
     "major_category",
@@ -153,7 +154,6 @@ elif page == "Import/Export":
 
     st.subheader("CSVアップロード")
     uploaded = st.file_uploader("CSVファイル", type=["csv"])
-    replace_existing = st.checkbox("既存データを置き換える", value=False)
 
     if uploaded is not None:
         try:
@@ -163,34 +163,66 @@ elif page == "Import/Export":
             uploaded_df = None
 
         if uploaded_df is not None:
-            missing = [col for col in REQUIRED_COLUMNS if col not in uploaded_df.columns]
+            normalized_df = normalize_import_dataframe(uploaded_df)
+            missing = [
+                col for col in REQUIRED_COLUMNS if col not in normalized_df.columns
+            ]
             if missing:
                 st.error(f"CSVに必要な列が不足しています: {', '.join(missing)}")
             else:
-                st.dataframe(uploaded_df.head(50), use_container_width=True)
-                if st.button("インポート"):
-                    rows = []
-                    for _, row in uploaded_df.iterrows():
-                        rows.append(
-                            {
-                                "major_category": str(row.get("major_category") or "").strip(),
-                                "sub_category": str(row.get("sub_category") or "").strip()
-                                or None,
-                                "name_or_ticker": str(row.get("name_or_ticker") or "").strip(),
-                                "account_type": str(row.get("account_type") or "").strip(),
-                                "quantity": _parse_quantity(row.get("quantity")),
-                                "value_jpy": parse_value_jpy(row.get("value_jpy")),
-                            }
-                        )
-                    try:
-                        if replace_existing:
-                            replace_holdings(rows)
+                rows = []
+                errors = []
+                for idx, row in normalized_df.iterrows():
+                    value_jpy = parse_value_jpy(row.get("value_jpy"))
+                    if value_jpy is None:
+                        errors.append(f"{idx + 1}行目: 評価額(円)が未入力です")
+                        continue
+                    rows.append(
+                        {
+                            "major_category": str(row.get("major_category") or "").strip(),
+                            "sub_category": str(row.get("sub_category") or "").strip()
+                            or None,
+                            "name_or_ticker": str(row.get("name_or_ticker") or "").strip(),
+                            "account_type": str(row.get("account_type") or "").strip(),
+                            "quantity": _parse_quantity(row.get("quantity")),
+                            "value_jpy": value_jpy,
+                        }
+                    )
+
+                if errors:
+                    st.error("インポート前の確認でエラーが見つかりました。")
+                    st.write("\n".join(errors[:10]))
+                else:
+                    preview_df = pd.DataFrame(rows)
+                    total_value = sum(row["value_jpy"] for row in rows)
+                    st.metric("取り込み件数", f"{len(rows):,}")
+                    st.metric("評価額合計 (円)", f"{int(total_value):,}")
+                    st.subheader("プレビュー (先頭10行)")
+                    st.dataframe(preview_df.head(10), use_container_width=True)
+
+                    action = st.radio(
+                        "既存データの扱い",
+                        ["キャンセル", "置換", "マージ"],
+                        index=0,
+                        horizontal=True,
+                    )
+                    st.caption(
+                        "マージは major_category + name_or_ticker + account_type をキーに更新します。"
+                    )
+
+                    if st.button("確定してインポート"):
+                        if action == "キャンセル":
+                            st.info("インポートをキャンセルしました。")
                         else:
-                            insert_holdings(rows)
-                        st.success("インポートしました。")
-                        st.cache_data.clear()
-                    except ValueError as exc:
-                        st.error(f"インポートに失敗しました: {exc}")
+                            try:
+                                if action == "置換":
+                                    replace_holdings(rows)
+                                else:
+                                    upsert_holdings_by_key(rows)
+                                st.success("インポートしました。")
+                                st.cache_data.clear()
+                            except ValueError as exc:
+                                st.error(f"インポートに失敗しました: {exc}")
 
     st.divider()
     st.subheader("CSVダウンロード")
