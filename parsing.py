@@ -35,6 +35,13 @@ def _normalize_number_input(value):
     return value
 
 
+def parse_float_value(value) -> float | None:
+    normalized = _normalize_number_input(value)
+    if normalized is None:
+        return None
+    return float(normalized)
+
+
 def parse_value_jpy(value) -> int | None:
     normalized = _normalize_number_input(value)
     if normalized is None:
@@ -46,10 +53,66 @@ def parse_value_jpy(value) -> int | None:
 
 
 def parse_quantity(value) -> float | None:
-    normalized = _normalize_number_input(value)
-    if normalized is None:
+    return parse_float_value(value)
+
+
+def _collapse_whitespace(text: str) -> str:
+    return " ".join(text.split())
+
+
+def normalize_text(value: object | None) -> str | None:
+    if value is None:
         return None
-    return float(normalized)
+    text = str(value).strip()
+    if not text:
+        return None
+    return _collapse_whitespace(text)
+
+
+def normalize_ticker(value: object | None) -> str | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    token = text.split()[0]
+    return token.upper()
+
+
+def normalize_name(value: object | None) -> str | None:
+    return normalize_text(value)
+
+
+def build_name_or_ticker(ticker: str | None, name: str | None) -> str:
+    if ticker and name:
+        return f"{ticker} {name}".strip()
+    return (ticker or name or "").strip()
+
+
+def normalize_account_type(account_type: object | None) -> str | None:
+    if account_type is None:
+        return None
+    account_text = normalize_text(account_type)
+    if not account_text:
+        return None
+    normalized = _normalize_section_text(account_text)
+    mapping = {
+        "NISA預り(成長投資枠)": "NISA(成長)",
+        "NISA預り(つみたて投資枠)": "NISA(つみたて)",
+        "旧つみたてNISA預り": "旧つみたてNISA",
+        "特定": "特定",
+        "一般": "一般",
+    }
+    for key, value in mapping.items():
+        if key in normalized:
+            return value
+    return account_text
+
+
+def build_upsert_key(row: dict) -> tuple[str | None, str | None, str | None]:
+    return (
+        normalize_text(row.get("major_category")),
+        normalize_text(row.get("name_or_ticker")),
+        normalize_text(row.get("account_type")),
+    )
 
 
 def decode_csv_bytes(data: bytes) -> str:
@@ -171,18 +234,7 @@ def _extract_account_type(section_text: str) -> str | None:
 
 
 def _normalize_account_type(account_type: str | None) -> str | None:
-    if not account_type:
-        return None
-    normalized = _normalize_section_text(account_type)
-    mapping = {
-        "NISA預り(成長投資枠)": "NISA(成長)",
-        "NISA預り(つみたて投資枠)": "NISA(つみたて)",
-        "旧つみたてNISA預り": "旧つみたてNISA",
-    }
-    for key, value in mapping.items():
-        if key in normalized:
-            return value
-    return account_type.strip()
+    return normalize_account_type(account_type)
 
 
 def _parse_header_row(

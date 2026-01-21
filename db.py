@@ -27,7 +27,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 name_or_ticker TEXT NOT NULL,
                 account_type TEXT NOT NULL,
                 quantity REAL,
-                value_jpy INTEGER NOT NULL CHECK (value_jpy >= 0),
+                value_jpy INTEGER CHECK (value_jpy IS NULL OR value_jpy >= 0),
                 updated_at TEXT NOT NULL
             )
             """
@@ -59,7 +59,7 @@ def upsert_holding(
     value_jpy: int,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> None:
-    if value_jpy is None or value_jpy < 0:
+    if value_jpy is not None and value_jpy < 0:
         raise ValueError("value_jpy must be 0 or greater")
 
     updated_at = _utc_now_iso()
@@ -142,7 +142,7 @@ def upsert_holdings_by_key(
         updated_at = _utc_now_iso()
         for row in rows:
             value_jpy = row.get("value_jpy")
-            if value_jpy is None or int(value_jpy) < 0:
+            if value_jpy is not None and int(value_jpy) < 0:
                 raise ValueError("value_jpy must be 0 or greater")
 
             major_category = row.get("major_category")
@@ -171,7 +171,7 @@ def upsert_holdings_by_key(
                     (
                         row.get("sub_category"),
                         row.get("quantity"),
-                        int(value_jpy),
+                        int(value_jpy) if value_jpy is not None else None,
                         updated_at,
                         existing["id"],
                     ),
@@ -190,7 +190,7 @@ def upsert_holdings_by_key(
                         name_or_ticker,
                         account_type,
                         row.get("quantity"),
-                        int(value_jpy),
+                        int(value_jpy) if value_jpy is not None else None,
                         updated_at,
                     ),
                 )
@@ -201,7 +201,7 @@ def _insert_rows(connection: sqlite3.Connection, rows: Iterable[dict]) -> None:
     payload = []
     for row in rows:
         value_jpy = row.get("value_jpy")
-        if value_jpy is None or int(value_jpy) < 0:
+        if value_jpy is not None and int(value_jpy) < 0:
             raise ValueError("value_jpy must be 0 or greater")
         payload.append(
             (
@@ -210,7 +210,7 @@ def _insert_rows(connection: sqlite3.Connection, rows: Iterable[dict]) -> None:
                 row.get("name_or_ticker"),
                 row.get("account_type"),
                 row.get("quantity"),
-                int(value_jpy),
+                int(value_jpy) if value_jpy is not None else None,
                 _utc_now_iso(),
             )
         )

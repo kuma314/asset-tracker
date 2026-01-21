@@ -4,7 +4,11 @@ import pandas as pd
 import pytest
 
 from parsing import (
+    build_name_or_ticker,
+    build_upsert_key,
+    normalize_name,
     normalize_import_dataframe,
+    normalize_ticker,
     parse_quantity,
     parse_report_csv,
     parse_value_jpy,
@@ -109,3 +113,18 @@ def test_parse_report_csv_extracts_nisa_sections() -> None:
     assert df.loc[1, "quantity"] == 214760.0
     assert df.loc[2, "quantity"] == 211866.0
     assert df.loc[0, "value_jpy"] == 601652
+
+
+def test_normalize_ticker_and_name_trims_whitespace() -> None:
+    assert normalize_ticker("  tsla ") == "TSLA"
+    assert normalize_name(" テスラ  ") == "テスラ"
+    assert build_name_or_ticker("TSLA", "テスラ") == "TSLA テスラ"
+
+
+def test_build_upsert_key_consistency() -> None:
+    row = {
+        "major_category": " 米国株 ",
+        "name_or_ticker": " TSLA テスラ ",
+        "account_type": " NISA(成長) ",
+    }
+    assert build_upsert_key(row) == ("米国株", "TSLA テスラ", "NISA(成長)")
