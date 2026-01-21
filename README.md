@@ -2,7 +2,10 @@
 
 個人資産の「現在の保有一覧」を記録・閲覧するためのStreamlitアプリです。
 
-## セットアップ
+## GitHub Codespaces でのセットアップ
+
+1. GitHub上でこのリポジトリを開き、**Code** → **Codespaces** → **Create codespace on main** を選択します。
+2. Codespace が起動したら、ターミナルで以下を実行します。
 
 ```bash
 python -m venv .venv
@@ -16,13 +19,14 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+起動後、Codespaces の **Ports** タブに表示される URL からアクセスします。
+
 ## OPENAI_API_KEY
 
 スクリーンショット取り込み（Screenshot Import）ではOpenAI APIを使用します。
 
-```bash
-export OPENAI_API_KEY="your-api-key"
-```
+Codespaces の **Settings** → **Secrets and variables** → **Codespaces** から
+`OPENAI_API_KEY` を登録し、Codespace を再起動してください。
 
 ## DB
 
