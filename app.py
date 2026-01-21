@@ -1,3 +1,4 @@
+from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -15,7 +16,13 @@ from db import (
     upsert_holdings_by_key,
     upsert_holding,
 )
-from parsing import normalize_import_dataframe, parse_quantity, parse_value_jpy
+from parsing import (
+    detect_report_csv,
+    normalize_import_dataframe,
+    parse_quantity,
+    parse_report_csv,
+    parse_value_jpy,
+)
 
 REQUIRED_COLUMNS = [
     "major_category",
@@ -49,6 +56,27 @@ def _load_holdings(db_path: Path) -> pd.DataFrame:
 
 def _parse_quantity(value) -> float | None:
     return parse_quantity(value)
+
+
+def _build_rows_from_df(df: pd.DataFrame) -> tuple[list[dict], list[str]]:
+    rows = []
+    errors = []
+    for idx, row in df.iterrows():
+        value_jpy = parse_value_jpy(row.get("value_jpy"))
+        if value_jpy is None:
+            errors.append(f"{idx + 1}行目: 評価額(円)が未入力です")
+            continue
+        rows.append(
+            {
+                "major_category": str(row.get("major_category") or "").strip(),
+                "sub_category": str(row.get("sub_category") or "").strip() or None,
+                "name_or_ticker": str(row.get("name_or_ticker") or "").strip(),
+                "account_type": str(row.get("account_type") or "").strip(),
+                "quantity": _parse_quantity(row.get("quantity")),
+                "value_jpy": value_jpy,
+            }
+        )
+    return rows, errors
 
 
 if page == "Holdings":
@@ -156,49 +184,37 @@ elif page == "Import/Export":
     uploaded = st.file_uploader("CSVファイル", type=["csv"])
 
     if uploaded is not None:
+        uploaded_bytes = uploaded.getvalue()
         try:
-            uploaded_df = pd.read_csv(uploaded)
-        except Exception as exc:
-            st.error(f"CSVの読み込みに失敗しました: {exc}")
-            uploaded_df = None
+            is_report, decoded_text = detect_report_csv(uploaded_bytes)
+        except ValueError as exc:
+            st.error(str(exc))
+            decoded_text = None
+            is_report = False
 
-        if uploaded_df is not None:
-            normalized_df = normalize_import_dataframe(uploaded_df)
-            missing = [
-                col for col in REQUIRED_COLUMNS if col not in normalized_df.columns
-            ]
-            if missing:
-                st.error(f"CSVに必要な列が不足しています: {', '.join(missing)}")
-            else:
-                rows = []
-                errors = []
-                for idx, row in normalized_df.iterrows():
-                    value_jpy = parse_value_jpy(row.get("value_jpy"))
-                    if value_jpy is None:
-                        errors.append(f"{idx + 1}行目: 評価額(円)が未入力です")
-                        continue
-                    rows.append(
-                        {
-                            "major_category": str(row.get("major_category") or "").strip(),
-                            "sub_category": str(row.get("sub_category") or "").strip()
-                            or None,
-                            "name_or_ticker": str(row.get("name_or_ticker") or "").strip(),
-                            "account_type": str(row.get("account_type") or "").strip(),
-                            "quantity": _parse_quantity(row.get("quantity")),
-                            "value_jpy": value_jpy,
-                        }
-                    )
+        if decoded_text is not None and is_report:
+            try:
+                report_df = parse_report_csv(uploaded_bytes)
+            except ValueError as exc:
+                st.error(f"CSVの解析に失敗しました: {exc}")
+                report_df = None
 
+            if report_df is not None:
+                st.caption("保有証券一覧レポート形式を検出しました。")
+                st.subheader("プレビュー (編集可能)")
+                edited_df = st.data_editor(
+                    report_df,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                )
+                rows, errors = _build_rows_from_df(edited_df)
                 if errors:
                     st.error("インポート前の確認でエラーが見つかりました。")
                     st.write("\n".join(errors[:10]))
                 else:
-                    preview_df = pd.DataFrame(rows)
                     total_value = sum(row["value_jpy"] for row in rows)
                     st.metric("取り込み件数", f"{len(rows):,}")
                     st.metric("評価額合計 (円)", f"{int(total_value):,}")
-                    st.subheader("プレビュー (先頭10行)")
-                    st.dataframe(preview_df.head(10), use_container_width=True)
 
                     action = st.radio(
                         "既存データの扱い",
@@ -223,6 +239,59 @@ elif page == "Import/Export":
                                 st.cache_data.clear()
                             except ValueError as exc:
                                 st.error(f"インポートに失敗しました: {exc}")
+        elif decoded_text is not None:
+            try:
+                uploaded_df = pd.read_csv(StringIO(decoded_text))
+            except Exception as exc:
+                st.error(f"CSVの読み込みに失敗しました: {exc}")
+                uploaded_df = None
+
+            if uploaded_df is not None:
+                normalized_df = normalize_import_dataframe(uploaded_df)
+                missing = [
+                    col for col in REQUIRED_COLUMNS if col not in normalized_df.columns
+                ]
+                if missing:
+                    st.error(
+                        f"CSVに必要な列が不足しています: {', '.join(missing)}"
+                    )
+                else:
+                    rows, errors = _build_rows_from_df(normalized_df)
+
+                    if errors:
+                        st.error("インポート前の確認でエラーが見つかりました。")
+                        st.write("\n".join(errors[:10]))
+                    else:
+                        preview_df = pd.DataFrame(rows)
+                        total_value = sum(row["value_jpy"] for row in rows)
+                        st.metric("取り込み件数", f"{len(rows):,}")
+                        st.metric("評価額合計 (円)", f"{int(total_value):,}")
+                        st.subheader("プレビュー (先頭10行)")
+                        st.dataframe(preview_df.head(10), use_container_width=True)
+
+                        action = st.radio(
+                            "既存データの扱い",
+                            ["キャンセル", "置換", "マージ"],
+                            index=0,
+                            horizontal=True,
+                        )
+                        st.caption(
+                            "マージは major_category + name_or_ticker + account_type をキーに更新します。"
+                        )
+
+                        if st.button("確定してインポート"):
+                            if action == "キャンセル":
+                                st.info("インポートをキャンセルしました。")
+                            else:
+                                try:
+                                    if action == "置換":
+                                        replace_holdings(rows)
+                                    else:
+                                        upsert_holdings_by_key(rows)
+                                    st.success("インポートしました。")
+                                    st.cache_data.clear()
+                                except ValueError as exc:
+                                    st.error(f"インポートに失敗しました: {exc}")
 
     st.divider()
     st.subheader("CSVダウンロード")
