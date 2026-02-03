@@ -1,0 +1,125 @@
+:root {
+  font-family: "Noto Sans JP", system-ui, sans-serif;
+  color: #1a202c;
+  background-color: #f7fafc;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  background: white;
+  padding: 16px 24px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.app-header h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.app-header nav {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.app-header a {
+  text-decoration: none;
+  color: #2d3748;
+  padding-bottom: 4px;
+}
+
+.app-header a.active {
+  border-bottom: 2px solid #3182ce;
+  color: #3182ce;
+}
+
+.app-main {
+  flex: 1;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.page h2 {
+  margin-top: 0;
+}
+
+.grid {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.card {
+  background: white;
+  padding: 16px;
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(26, 32, 44, 0.08);
+}
+
+.form-grid {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+input,
+select,
+button {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e0;
+  font-size: 14px;
+}
+
+button.primary {
+  background: #3182ce;
+  color: white;
+  border: none;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.positive {
+  color: #2f855a;
+}
+
+.negative {
+  color: #c53030;
+}
+
+.app-disclaimer {
+  background: #1a202c;
+  color: white;
+  text-align: center;
+  padding: 12px 16px;
+  position: sticky;
+  bottom: 0;
+}
